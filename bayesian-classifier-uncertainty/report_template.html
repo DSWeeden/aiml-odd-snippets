@@ -19,6 +19,7 @@
     --pop:       #f78166;
     --accent:    #3fb950;
     --warn:      #d29922;
+    --danger:    #f85149;
     --mono:      'DM Mono', monospace;
     --sans:      'DM Sans', sans-serif;
   }
@@ -47,7 +48,6 @@
     font-size: 18px;
     font-weight: 500;
     letter-spacing: -0.02em;
-    color: var(--text);
   }
 
   header .subtitle {
@@ -72,7 +72,6 @@
 
   .tabs {
     display: flex;
-    gap: 0;
     padding: 0 40px;
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
@@ -88,16 +87,13 @@
     white-space: nowrap;
     transition: color 0.15s, border-color 0.15s;
     background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
+    border-top: none; border-left: none; border-right: none;
   }
 
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--sample); border-bottom-color: var(--sample); }
 
   .main { padding: 32px 40px; }
-
   .panel { display: none; }
   .panel.active { display: block; }
 
@@ -216,6 +212,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 16px;
+    margin-bottom: 32px;
   }
 
   .decomp-table {
@@ -263,21 +260,6 @@
     margin-right: 6px;
   }
 
-  .tooltip {
-    position: fixed;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-family: var(--mono);
-    font-size: 11px;
-    pointer-events: none;
-    z-index: 1000;
-    display: none;
-    max-width: 240px;
-    line-height: 1.8;
-  }
-
   .ci-note {
     font-size: 11px;
     color: var(--text-dim);
@@ -309,7 +291,55 @@
   }
 
   .class-btn:hover { border-color: var(--sample); color: var(--text); }
-  .class-btn.active { border-color: var(--sample); color: var(--sample); background: rgba(88,166,255,0.08); }
+  .class-btn.active {
+    border-color: var(--sample);
+    color: var(--sample);
+    background: rgba(88,166,255,0.08);
+  }
+
+  .transport-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 32px;
+  }
+
+  .transport-card h3 {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .transport-card p {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    margin-bottom: 14px;
+    line-height: 1.7;
+  }
+
+  .transport-card canvas {
+    width: 100% !important;
+    height: 100px !important;
+  }
+
+  .fit-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: var(--mono);
+    font-weight: 500;
+    margin-left: 8px;
+  }
+
+  .fit-good     { background: rgba(63,185,80,0.15);  color: var(--accent); }
+  .fit-moderate { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .fit-poor     { background: rgba(248,81,73,0.15);  color: var(--danger); }
 </style>
 </head>
 <body>
@@ -332,6 +362,7 @@
 
 <div class="main">
 
+  <!-- PER-CLASS PANEL -->
   <div id="panel-per-class" class="panel active">
     <p class="ci-note" id="note-per-class"></p>
     <div class="section-title">Select class</div>
@@ -339,6 +370,7 @@
     <div id="per-class-cards" class="metric-grid"></div>
   </div>
 
+  <!-- DISTRIBUTIONS PANEL -->
   <div id="panel-distributions" class="panel">
     <p class="ci-note">
       Posterior distributions over metric values. Overlap between blue (sample) and red (population)
@@ -348,30 +380,30 @@
     <div id="dist-cards" class="dist-grid"></div>
   </div>
 
+  <!-- AGGREGATE PANEL -->
   <div id="panel-aggregate" class="panel">
     <p class="ci-note">
       Macro averages weight all classes equally. Micro averages weight by prediction volume.
+      MCC and Kappa account for class imbalance; values closer to 1 indicate stronger agreement.
     </p>
+    <div id="transport-fit-card" class="transport-card"></div>
+    <div class="section-title">Aggregate metrics</div>
     <div id="agg-cards" class="agg-grid"></div>
   </div>
 
+  <!-- DECOMPOSITION PANEL -->
   <div id="panel-decomposition" class="panel">
     <p class="ci-note">
-      Decomposition of total posterior uncertainty into sampling (U1) and population (U2) components.
-      U1 = std of sample-level posterior. U2 = additional std when pi is also uncertain.
-      Total std ≈ sqrt(U1² + U2²).
+      U1 = std from incomplete review (sampling uncertainty). U2 = additional std from population
+      prevalence uncertainty. Total std ≈ √(U1² + U2²) — heuristic; covariance term omitted.
+      Compute from joint draws for exact decomposition.
     </p>
     <div class="section-title">Uncertainty decomposition by class and metric</div>
-    <table class="decomp-table" id="decomp-table">
+    <table class="decomp-table">
       <thead>
         <tr>
-          <th>Class</th>
-          <th>Metric</th>
-          <th>Sample mean</th>
-          <th>Pop mean</th>
-          <th>U1 (sampling)</th>
-          <th>U2 (population)</th>
-          <th>Dominant source</th>
+          <th>Class</th><th>Metric</th><th>Sample mean</th><th>Pop mean</th>
+          <th>U1 (sampling)</th><th>U2 (population)</th><th>Dominant</th>
         </tr>
       </thead>
       <tbody id="decomp-body"></tbody>
@@ -380,33 +412,69 @@
 
 </div>
 
-<div class="tooltip" id="tooltip"></div>
-
 <script>
 const DATA = __DATA_JSON__;
 
-const METRICS = ['precision','recall','specificity','f1','accuracy'];
+const METRICS = ['precision','recall','specificity','f1','ovr_accuracy'];
 const METRIC_LABELS = {
-  precision: 'Precision', recall: 'Recall', specificity: 'Specificity',
-  f1: 'F1', accuracy: 'Accuracy'
+  precision:    'Precision',
+  recall:       'Recall',
+  specificity:  'Specificity',
+  f1:           'F1',
+  ovr_accuracy: 'Accuracy (one-vs-rest)',
 };
-const AGG_METRICS = ['macro_f1','macro_precision','macro_recall','micro_f1','micro_precision','micro_recall'];
+
+const AGG_METRICS = [
+  'overall_accuracy','mcc','kappa',
+  'macro_f1','macro_precision','macro_recall','macro_specificity',
+  'micro_f1','micro_precision','micro_recall','micro_specificity',
+];
 const AGG_LABELS = {
-  macro_f1: 'Macro F1', macro_precision: 'Macro Precision', macro_recall: 'Macro Recall',
-  micro_f1: 'Micro F1', micro_precision: 'Micro Precision', micro_recall: 'Micro Recall'
+  overall_accuracy:  'Overall Accuracy',
+  mcc:               'MCC',
+  kappa:             "Cohen's Kappa",
+  macro_f1:          'Macro F1',
+  macro_precision:   'Macro Precision',
+  macro_recall:      'Macro Recall',
+  macro_specificity: 'Macro Specificity',
+  micro_f1:          'Micro F1',
+  micro_precision:   'Micro Precision',
+  micro_recall:      'Micro Recall',
+  micro_specificity: 'Micro Specificity',
+};
+
+// Fixed theoretical ranges for bar scaling
+const METRIC_RANGES = {
+  precision:        [0, 1],
+  recall:           [0, 1],
+  specificity:      [0, 1],
+  f1:               [0, 1],
+  ovr_accuracy:     [0, 1],
+  overall_accuracy: [0, 1],
+  mcc:              [-1, 1],
+  kappa:            [-1, 1],
+  macro_f1:         [0, 1],
+  macro_precision:  [0, 1],
+  macro_recall:     [0, 1],
+  macro_specificity:[0, 1],
+  micro_f1:         [0, 1],
+  micro_precision:  [0, 1],
+  micro_recall:     [0, 1],
+  micro_specificity:[0, 1],
 };
 
 let selectedClass = 0;
 const charts = {};
 
-// Populate dynamic header content
+// Header
 document.getElementById('header-subtitle').textContent =
   `${DATA.ci_pct}% credible intervals · bayesian posterior`;
 document.getElementById('note-per-class').textContent =
-  `Blue = uncertainty from incomplete review (U1: sampling). ` +
-  `Red = additional uncertainty from population distribution (U1 + U2). ` +
+  `Blue = uncertainty from incomplete review (U1). ` +
+  `Red = additional uncertainty from population prevalence (U1+U2). ` +
   `Bars show posterior mean with ${DATA.ci_pct}% credible interval.`;
 
+// --- Class selectors ---
 function buildClassSelectors() {
   ['class-selector','class-selector-dist'].forEach(id => {
     const el = document.getElementById(id);
@@ -429,6 +497,7 @@ function selectClass(idx) {
   renderDistCards();
 }
 
+// --- Per-class cards ---
 function renderPerClassCards() {
   const container = document.getElementById('per-class-cards');
   container.innerHTML = '';
@@ -442,18 +511,22 @@ function renderPerClassCards() {
     card.className = 'metric-card';
     card.innerHTML = `<h3>${METRIC_LABELS[metric]}</h3>`;
 
+    // Fixed theoretical scale for this metric
+    const [pcMin, pcMax] = METRIC_RANGES[metric];
+    const pcRange = pcMax - pcMin;
+
     [['Sample', samp, 'sample'], ['Population', pop, 'pop']].forEach(([label, d, cls]) => {
       const mean  = Array.isArray(d.mean)  ? d.mean[k]  : d.mean;
       const lower = Array.isArray(d.lower) ? d.lower[k] : d.lower;
       const upper = Array.isArray(d.upper) ? d.upper[k] : d.upper;
       const std   = Array.isArray(d.std)   ? d.std[k]   : d.std;
 
+      const pct_mean  = ((mean  - pcMin) / pcRange) * 100;
+      const pct_lower = ((lower - pcMin) / pcRange) * 100;
+      const pct_width = ((upper - lower) / pcRange) * 100;
+
       const row = document.createElement('div');
       row.className = 'metric-row';
-      const pct_mean  = mean  * 100;
-      const pct_lower = lower * 100;
-      const pct_width = (upper - lower) * 100;
-
       row.innerHTML = `
         <span class="metric-label">${label}</span>
         <div class="bar-container">
@@ -461,8 +534,7 @@ function renderPerClassCards() {
           <div class="bar-mean ${cls}-color" style="left:calc(${pct_mean}% - 1.5px)"></div>
         </div>
         <span class="metric-value" style="color:var(--${cls})">
-          ${mean.toFixed(3)}
-          <span style="color:var(--text-dim);font-size:10px"> ±${std.toFixed(3)}</span>
+          ${mean.toFixed(3)}<span style="color:var(--text-dim);font-size:10px"> ±${std.toFixed(3)}</span>
         </span>
       `;
       card.appendChild(row);
@@ -477,6 +549,7 @@ function renderPerClassCards() {
   });
 }
 
+// --- Distribution cards ---
 function renderDistCards() {
   const container = document.getElementById('dist-cards');
   container.innerHTML = '';
@@ -497,55 +570,78 @@ function renderDistCards() {
     const sampSamples = samp.samples.map(row => Array.isArray(row) ? row[k] : row);
     const popSamples  = pop.samples.map(row  => Array.isArray(row) ? row[k] : row);
 
-    const allVals = [...sampSamples, ...popSamples];
-    const globalMin = Math.min(...allVals), globalMax = Math.max(...allVals);
-    const bins = 40;
-    const binWidth = (globalMax - globalMin) / bins || 0.001;
+    renderHistogram(canvas, sampSamples, popSamples, `dist-${metric}-${k}`);
+  });
+}
 
-    function histFixed(data) {
-      const counts = new Array(bins).fill(0);
-      const labels = [];
-      for (let i = 0; i < bins; i++) labels.push((globalMin + (i+0.5)*binWidth).toFixed(3));
-      data.forEach(v => {
-        const idx = Math.min(Math.floor((v - globalMin) / binWidth), bins-1);
-        if (idx >= 0) counts[idx]++;
-      });
-      return { labels, density: counts.map(c => c / data.length / binWidth) };
-    }
+// --- Aggregate panel ---
+function renderTransportFitCard() {
+  const card = document.getElementById('transport-fit-card');
+  const tf = DATA.transport_fit;
+  const mean = tf.mean;
+  const fitClass = mean < 0.02 ? 'good' : mean < 0.05 ? 'moderate' : 'poor';
+  const fitLabel = mean < 0.02 ? 'good fit' : mean < 0.05 ? 'moderate fit' : 'poor fit — check stability assumption';
 
-    const hs = histFixed(sampSamples);
-    const hp = histFixed(popSamples);
-    const chartId = `chart-${metric}-${k}`;
-    canvas.id = chartId;
-    if (charts[chartId]) charts[chartId].destroy();
+  card.innerHTML = `
+    <h3>Q-stability assumption: transport fit diagnostic
+      <span class="fit-badge fit-${fitClass}">${fitLabel}</span>
+    </h3>
+    <p>
+      Residual ||Qp - π|| from solving the population predicted-class mix.
+      Low values indicate that the Q-stability assumption is well supported by the data.
+      High values suggest the model's conditional error behaviour may differ between the
+      inference set and population — treat population metrics with additional caution.
+    </p>
+    <div class="metric-row" style="margin-bottom:6px">
+      <span class="metric-label">Mean</span>
+      <span style="font-family:var(--mono);font-size:13px;color:var(--${fitClass === 'good' ? 'accent' : fitClass === 'moderate' ? 'warn' : 'danger'})">${mean.toFixed(4)}</span>
+    </div>
+    <div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-left:80px;margin-bottom:14px">
+      ${DATA.ci_pct}% CI: [${tf.lower.toFixed(4)}, ${tf.upper.toFixed(4)}]
+    </div>
+  `;
 
-    charts[chartId] = new Chart(canvas, {
-      type: 'bar',
-      data: {
-        labels: hs.labels,
-        datasets: [
-          { label: 'Sample',     data: hs.density, backgroundColor: 'rgba(88,166,255,0.4)', borderColor: 'rgba(88,166,255,0.8)', borderWidth: 1 },
-          { label: 'Population', data: hp.density, backgroundColor: 'rgba(247,129,102,0.4)', borderColor: 'rgba(247,129,102,0.8)', borderWidth: 1 }
-        ]
+  const canvas = document.createElement('canvas');
+  card.appendChild(canvas);
+
+  const samples = Array.isArray(tf.samples[0]) ? tf.samples.map(r => r[0]) : tf.samples;
+  const gMin = Math.min(...samples), gMax = Math.max(...samples);
+  const bins = 40, bw = (gMax - gMin) / bins || 0.001;
+
+  function hf(data) {
+    const counts = new Array(bins).fill(0);
+    const labels = [];
+    for (let i = 0; i < bins; i++) labels.push((gMin + (i+0.5)*bw).toFixed(4));
+    data.forEach(v => { const idx = Math.min(Math.floor((v-gMin)/bw), bins-1); if(idx>=0) counts[idx]++; });
+    return { labels, density: counts.map(c => c/data.length/bw) };
+  }
+
+  const h = hf(samples);
+  const fitColorHex = fitClass === 'good' ? 'rgba(63,185,80' : fitClass === 'moderate' ? 'rgba(210,153,34' : 'rgba(248,81,73';
+
+  if (charts['transport']) charts['transport'].destroy();
+  charts['transport'] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: h.labels,
+      datasets: [{ label: 'Residual', data: h.density,
+        backgroundColor: `${fitColorHex},0.3)`, borderColor: `${fitColorHex},0.8)`, borderWidth: 1 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 6 }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' },
+             title: { display: true, text: 'density', color: '#8b949e', font: { size: 9 } } }
       },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: {
-          legend: { labels: { color: '#8b949e', font: { family: 'DM Mono', size: 10 } } },
-          tooltip: { bodyFont: { family: 'DM Mono' } }
-        },
-        scales: {
-          x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: '#21262d' } },
-          y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' },
-               title: { display: true, text: 'density', color: '#8b949e', font: { size: 9 } } }
-        },
-        barPercentage: 1.0, categoryPercentage: 1.0,
-      }
-    });
+      barPercentage: 1.0, categoryPercentage: 1.0,
+    }
   });
 }
 
 function renderAggCards() {
+  renderTransportFitCard();
   const container = document.getElementById('agg-cards');
   container.innerHTML = '';
 
@@ -557,19 +653,26 @@ function renderAggCards() {
     card.className = 'dist-card';
     card.innerHTML = `<h3>${AGG_LABELS[metric]}</h3>`;
 
+    // Fixed theoretical scale for this metric
+    const [barMin, barMax] = METRIC_RANGES[metric];
+    const barRange = barMax - barMin;
+
     [['Sample', samp, 'sample'], ['Population', pop, 'pop']].forEach(([label, d, cls]) => {
-      const mean  = Array.isArray(d.mean)  ? d.mean[0]  : d.mean;
+      const mean  = Array.isArray(d.mean)  ? d.mean[0] : d.mean;
       const lower = Array.isArray(d.lower) ? d.lower[0] : d.lower;
       const upper = Array.isArray(d.upper) ? d.upper[0] : d.upper;
 
+      const pct_mean  = ((mean  - barMin) / barRange) * 100;
+      const pct_lower = ((lower - barMin) / barRange) * 100;
+      const pct_width = ((upper - lower)  / barRange) * 100;
+
       const row = document.createElement('div');
       row.className = 'metric-row';
-
       row.innerHTML = `
         <span class="metric-label">${label}</span>
         <div class="bar-container">
-          <div class="bar-ci ${cls}-color" style="left:${lower*100}%;width:${(upper-lower)*100}%"></div>
-          <div class="bar-mean ${cls}-color" style="left:calc(${mean*100}% - 1.5px)"></div>
+          <div class="bar-ci ${cls}-color" style="left:${pct_lower}%;width:${pct_width}%"></div>
+          <div class="bar-mean ${cls}-color" style="left:calc(${pct_mean}% - 1.5px)"></div>
         </div>
         <span class="metric-value" style="color:var(--${cls})">${mean.toFixed(3)}</span>
       `;
@@ -587,45 +690,11 @@ function renderAggCards() {
 
     const sampSamples = Array.isArray(samp.samples[0]) ? samp.samples.map(r => r[0]) : samp.samples;
     const popSamples  = Array.isArray(pop.samples[0])  ? pop.samples.map(r  => r[0]) : pop.samples;
-
-    const allVals = [...sampSamples, ...popSamples];
-    const gMin = Math.min(...allVals), gMax = Math.max(...allVals);
-    const bins = 40, bw = (gMax - gMin) / bins || 0.001;
-
-    function hf(data) {
-      const counts = new Array(bins).fill(0);
-      const labels = [];
-      for (let i = 0; i < bins; i++) labels.push((gMin + (i+0.5)*bw).toFixed(3));
-      data.forEach(v => { const idx = Math.min(Math.floor((v-gMin)/bw), bins-1); if(idx>=0) counts[idx]++; });
-      return { labels, density: counts.map(c => c/data.length/bw) };
-    }
-
-    const hs2 = hf(sampSamples), hp2 = hf(popSamples);
-    const cid = `chart-agg-${metric}`;
-    canvas.id = cid;
-    if (charts[cid]) charts[cid].destroy();
-    charts[cid] = new Chart(canvas, {
-      type: 'bar',
-      data: {
-        labels: hs2.labels,
-        datasets: [
-          { label: 'Sample',     data: hs2.density, backgroundColor: 'rgba(88,166,255,0.4)', borderColor: 'rgba(88,166,255,0.8)', borderWidth: 1 },
-          { label: 'Population', data: hp2.density, backgroundColor: 'rgba(247,129,102,0.4)', borderColor: 'rgba(247,129,102,0.8)', borderWidth: 1 }
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: '#8b949e', font: { family: 'DM Mono', size: 10 } } } },
-        scales: {
-          x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: '#21262d' } },
-          y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' } }
-        },
-        barPercentage: 1.0, categoryPercentage: 1.0
-      }
-    });
+    renderHistogram(canvas, sampSamples, popSamples, `agg-${metric}`);
   });
 }
 
+// --- Decomposition table ---
 function renderDecomposition() {
   const tbody = document.getElementById('decomp-body');
   tbody.innerHTML = '';
@@ -638,7 +707,6 @@ function renderDecomposition() {
       const u1 = Array.isArray(samp.std) ? samp.std[k] : samp.std;
       const totalStd = Array.isArray(pop.std) ? pop.std[k] : pop.std;
       const u2 = Math.sqrt(Math.max(0, totalStd**2 - u1**2));
-
       const sampMean = Array.isArray(samp.mean) ? samp.mean[k] : samp.mean;
       const popMean  = Array.isArray(pop.mean)  ? pop.mean[k]  : pop.mean;
 
@@ -647,7 +715,7 @@ function renderDecomposition() {
 
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td style="font-family:var(--mono);color:var(--text)">${mi === 0 ? className : ''}</td>
+        <td style="font-family:var(--mono)">${mi === 0 ? className : ''}</td>
         <td style="font-family:var(--mono);color:var(--text-dim)">${METRIC_LABELS[metric]}</td>
         <td style="font-family:var(--mono)">${sampMean.toFixed(3)}</td>
         <td style="font-family:var(--mono)">${popMean.toFixed(3)}</td>
@@ -666,6 +734,47 @@ function renderDecomposition() {
   });
 }
 
+// --- Shared histogram renderer ---
+function renderHistogram(canvas, sampSamples, popSamples, chartId) {
+  const allVals = [...sampSamples, ...popSamples];
+  const gMin = Math.min(...allVals), gMax = Math.max(...allVals);
+  const bins = 40, bw = (gMax - gMin) / bins || 0.001;
+
+  function hf(data) {
+    const counts = new Array(bins).fill(0);
+    const labels = [];
+    for (let i = 0; i < bins; i++) labels.push((gMin + (i+0.5)*bw).toFixed(3));
+    data.forEach(v => { const idx = Math.min(Math.floor((v-gMin)/bw), bins-1); if(idx>=0) counts[idx]++; });
+    return { labels, density: counts.map(c => c/data.length/bw) };
+  }
+
+  const hs = hf(sampSamples), hp = hf(popSamples);
+  canvas.id = chartId;
+  if (charts[chartId]) charts[chartId].destroy();
+
+  charts[chartId] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: hs.labels,
+      datasets: [
+        { label: 'Sample',     data: hs.density, backgroundColor: 'rgba(88,166,255,0.4)', borderColor: 'rgba(88,166,255,0.8)', borderWidth: 1 },
+        { label: 'Population', data: hp.density, backgroundColor: 'rgba(247,129,102,0.4)', borderColor: 'rgba(247,129,102,0.8)', borderWidth: 1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b949e', font: { family: 'DM Mono', size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' },
+             title: { display: true, text: 'density', color: '#8b949e', font: { size: 9 } } }
+      },
+      barPercentage: 1.0, categoryPercentage: 1.0,
+    }
+  });
+}
+
+// --- Tab switching ---
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => {
     t.classList.toggle('active', t.getAttribute('onclick').includes(name));
@@ -674,7 +783,7 @@ function switchTab(name) {
     p.classList.toggle('active', p.id === `panel-${name}`);
   });
   if (name === 'distributions') renderDistCards();
-  if (name === 'aggregate') renderAggCards();
+  if (name === 'aggregate')     renderAggCards();
   if (name === 'decomposition') renderDecomposition();
 }
 

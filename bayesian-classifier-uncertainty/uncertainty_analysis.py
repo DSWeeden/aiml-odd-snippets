@@ -2,29 +2,76 @@
 Bayesian Classifier Uncertainty Analysis
 =========================================
 Quantifies and decomposes uncertainty in multi-class classifier metrics across:
-  - U1: Sampling uncertainty (incomplete review of predictions)
+  - U1: Sampling uncertainty (incomplete review within inference set)
   - U2: Population uncertainty (inference set != population via pi)
 
-Generative model:
-  pi   ~ Dirichlet(alpha_pi)          # true class prevalences in population
-  T_k  ~ Dirichlet(alpha_T_k)         # P(predicted=j | true=k), one row per true class
-  C°   = diag(pi) · T                 # population confusion matrix (proportions)
+Generative model
+----------------
+The sampling design is quota-sampling within predicted class. This means the
+natural observed conditional is P(true=j | predicted=k), not P(predicted=k | true=j).
 
-All metrics are deterministic functions of C°, so posteriors are
-fully induced by sampling pi and T from their Dirichlet posteriors.
+  Q_k  ~ Dirichlet(alpha_Q_k)    # P(true=j | predicted=k), one per predicted class
+  p_inf = I_k / sum(I_k)         # inference-set predicted-class mix (known exactly)
+  C_inf[j,k] = p_inf[k] * Q_k(j) # inference-set confusion matrix (U1)
 
-Usage:
-  Populate a ReviewData object with your inputs, call run_analysis(),
-  then call generate_html_report() pointing at report_template.html.
+For population metrics, we solve for the population predicted-class mix p_pop:
+  pi = Q @ p_pop  =>  p_pop = argmin_{p in Delta} ||Q p - pi||^2
+  C_pop[j,k] = p_pop[k] * Q_k(j) # population confusion matrix (U1 + U2)
+
+The transport fit residual ||Q p_pop - pi|| is reported as a diagnostic:
+a large residual indicates the Q-stability assumption is poorly supported.
+
+Key assumption
+--------------
+Q_k is stable between the inference set and the population — i.e. the model's
+error behaviour given a predicted class does not change. Only the mix of
+predictions (p) changes between contexts.
+
+Usage
+-----
+  data    = ReviewData(class_names, review_counts, I_k, pi_counts)
+  results = run_analysis(data, n_samples=5000, ci=0.95)
+  generate_html_report(results, template_path="report_template.html")
 """
 
 import json
 import numpy as np
 from pathlib import Path
+from scipy.optimize import minimize
 
 
 # ---------------------------------------------------------------------------
-# Data structures
+# Simplex-constrained least squares
+# ---------------------------------------------------------------------------
+
+def _solve_simplex(Q, pi):
+    """
+    Solve  min_{p in Delta^{K-1}}  ||Q @ p - pi||^2
+
+    Q  : (K, K) where Q[j, k] = P(true=j | pred=k)
+    pi : (K,)   true class prevalences in the target population
+    Returns p : (K,) population predicted-class mix
+    """
+    K = len(pi)
+    res = minimize(
+        fun=lambda p: float(np.sum((Q @ p - pi) ** 2)),
+        x0=np.ones(K) / K,
+        jac=lambda p: 2.0 * Q.T @ (Q @ p - pi),
+        method='SLSQP',
+        constraints={
+            'type': 'eq',
+            'fun':  lambda p: p.sum() - 1.0,
+            'jac':  lambda p: np.ones(K),
+        },
+        bounds=[(0.0, 1.0)] * K,
+        options={'ftol': 1e-12, 'maxiter': 500},
+    )
+    p = np.clip(res.x, 0.0, 1.0)
+    return p / p.sum()
+
+
+# ---------------------------------------------------------------------------
+# Data structure
 # ---------------------------------------------------------------------------
 
 class ReviewData:
@@ -38,19 +85,19 @@ class ReviewData:
 
     review_counts : np.ndarray, shape (K, K)
         review_counts[j, k] = number of reviewed items predicted as class k
-        whose true label is j.
-        Rows = true class, Cols = predicted class.
+        whose true label is j. Rows = true class, Cols = predicted class.
+        Column k is a draw from Q_k = P(true=j | predicted=k).
 
     I_k : np.ndarray, shape (K,)
         Total number of predictions of class k in the inference set.
-        Must satisfy I_k[k] >= review_counts[:, k].sum() for all k.
+        Defines the inference-set predicted-class mix exactly as I_k / sum(I_k).
 
     pi_counts : np.ndarray, shape (K,)
         Historical counts of true class k in the population.
-        Used to parameterise the Dirichlet posterior on pi.
+        Parameterises the Dirichlet posterior on pi = P(true=k) in population.
 
     dirichlet_prior_strength : float
-        Concentration of the uninformative prior added to all counts.
+        Uninformative prior concentration added to all counts.
         Default 0.5 (Jeffreys prior for Dirichlet).
     """
 
@@ -71,18 +118,17 @@ class ReviewData:
             f"pi_counts must have shape ({self.K},)"
 
     @property
-    def alpha_T(self):
+    def alpha_Q(self):
         """
-        Dirichlet concentration for each row j of T.
-        T[j, k] = P(predicted=k | true=j).
-        alpha_T[j, :] = prior + review_counts[j, :].
+        Dirichlet concentrations for Q_k = P(true=j | pred=k).
+        alpha_Q[:, k] = prior + review_counts[:, k]  (column k).
         """
-        return self.prior + self.review_counts  # shape (K, K)
+        return self.prior + self.review_counts  # (K, K), col k = alpha for Q_k
 
     @property
     def alpha_pi(self):
-        """Dirichlet concentration for population proportions."""
-        return self.prior + self.pi_counts  # shape (K,)
+        """Dirichlet concentration for population true-class prevalences."""
+        return self.prior + self.pi_counts  # (K,)
 
 
 # ---------------------------------------------------------------------------
@@ -91,41 +137,63 @@ class ReviewData:
 
 def sample_posterior(data: ReviewData, n_samples: int = 5000, seed: int = 42):
     """
-    Draw samples from the joint posterior over (pi, T).
+    Draw samples from the posterior over (Q, pi), derive confusion matrices.
 
     Returns
     -------
     dict with keys:
-        'pi'    : (n_samples, K)    — sampled population proportions
-        'T'     : (n_samples, K, K) — sampled transition matrices
-        'C_pop' : (n_samples, K, K) — population confusion matrix (U1 + U2)
-        'C_samp': (n_samples, K, K) — sample confusion matrix (U1 only, pi fixed)
+        'Q'         : (n_samples, K, K)  Q[s, j, k] = P(true=j | pred=k)
+        'pi'        : (n_samples, K)     sampled population prevalences
+        'p_inf'     : (K,)               inference-set predicted-class mix (fixed)
+        'p_pop'     : (n_samples, K)     population predicted-class mix (solved)
+        'C_samp'    : (n_samples, K, K)  inference confusion matrix (U1 only)
+        'C_pop'     : (n_samples, K, K)  population confusion matrix (U1 + U2)
+        'residuals' : (n_samples,)       transport fit: ||Q p_pop - pi||
     """
     rng = np.random.default_rng(seed)
     K = data.K
 
-    # Sample T: one Dirichlet per true class (row of T)
-    T = np.stack([
-        rng.dirichlet(data.alpha_T[j], size=n_samples)
-        for j in range(K)
-    ], axis=1)  # (n_samples, K, K)
+    # --- Sample Q: one Dirichlet per predicted class (column k) ---
+    # Q[s, j, k] = P(true=j | pred=k)
+    Q = np.stack([
+        rng.dirichlet(data.alpha_Q[:, k], size=n_samples)
+        for k in range(K)
+    ], axis=2)  # (n_samples, K, K)
 
-    # Sample pi (for population-level metrics)
+    # --- Inference-set predicted mix: known exactly from I_k ---
+    p_inf = data.I_k / data.I_k.sum()  # (K,)
+
+    # --- U1: inference-set confusion ---
+    # C_samp[s, j, k] = p_inf[k] * Q[s, j, k]
+    C_samp = Q * p_inf[np.newaxis, np.newaxis, :]  # (n_samples, K, K)
+
+    # --- U2: sample pi, solve for population predicted mix ---
     pi_samples = rng.dirichlet(data.alpha_pi, size=n_samples)  # (n_samples, K)
 
-    # Fix pi to its posterior mean (for sample-level / U1-only metrics)
-    pi_fixed = data.alpha_pi / data.alpha_pi.sum()
-    pi_fixed_rep = np.broadcast_to(pi_fixed, (n_samples, K))
+    print(f"Solving population predicted-class mix for {n_samples} posterior draws...", flush=True)
+    p_pop = np.array([
+        _solve_simplex(Q[s], pi_samples[s])
+        for s in range(n_samples)
+    ])  # (n_samples, K)
 
-    # C[s, j, k] = pi[s, j] * T[s, j, k]
-    C_pop  = pi_samples[:, :, np.newaxis] * T    # (n_samples, K, K)
-    C_samp = pi_fixed_rep[:, :, np.newaxis] * T  # (n_samples, K, K)
+    # Transport fit diagnostic: ||Q p_pop - pi||
+    residuals = np.array([
+        np.linalg.norm(Q[s] @ p_pop[s] - pi_samples[s])
+        for s in range(n_samples)
+    ])  # (n_samples,)
+
+    # --- U1 + U2: population confusion ---
+    # C_pop[s, j, k] = p_pop[s, k] * Q[s, j, k]
+    C_pop = Q * p_pop[:, np.newaxis, :]  # (n_samples, K, K)
 
     return {
-        'pi':     pi_samples,
-        'T':      T,
-        'C_pop':  C_pop,
-        'C_samp': C_samp,
+        'Q':         Q,
+        'pi':        pi_samples,
+        'p_inf':     p_inf,
+        'p_pop':     p_pop,
+        'C_samp':    C_samp,
+        'C_pop':     C_pop,
+        'residuals': residuals,
     }
 
 
@@ -149,10 +217,10 @@ def compute_metrics_from_cm(C):
     eps = 1e-12
     K = C.shape[1]
 
-    TP = C[:, np.arange(K), np.arange(K)]   # (n, K)
-    pred_pos = C.sum(axis=1)                  # (n, K) P(predicted=k)
-    true_pos = C.sum(axis=2)                  # (n, K) P(true=k)
-    total = C.sum(axis=(1, 2))                # (n,)
+    TP = C[:, np.arange(K), np.arange(K)]  # (n, K) diagonal
+    pred_pos = C.sum(axis=1)                 # (n, K) col sums = P(pred=k)
+    true_pos = C.sum(axis=2)                 # (n, K) row sums = P(true=j)
+    total    = C.sum(axis=(1, 2))            # (n,)
 
     FP = pred_pos - TP
     FN = true_pos - TP
@@ -162,16 +230,37 @@ def compute_metrics_from_cm(C):
     recall      = TP / (TP + FN + eps)
     specificity = TN / (TN + FP + eps)
     f1          = 2 * precision * recall / (precision + recall + eps)
-    accuracy    = (TP + TN) / (total[:, np.newaxis] + eps)
+    # One-vs-rest accuracy per class
+    ovr_accuracy = (TP + TN) / (total[:, np.newaxis] + eps)
 
-    # Macro averages (equal weight per class)
+    # --- Aggregate scalars ---
+
+    # Overall accuracy
+    overall_accuracy = TP.sum(axis=1) / (total + eps)
+
+    # Multiclass MCC (Gorodkin 2004 / Wikipedia formula)
+    # MCC = (c*s - Σ_k t_k*p_k) / sqrt((s²-Σ_k p_k²)(s²-Σ_k t_k²))
+    c = TP.sum(axis=1)
+    s = total
+    numerator_mcc = c * s - (true_pos * pred_pos).sum(axis=1)
+    denom_mcc = np.sqrt(
+        (s ** 2 - (pred_pos ** 2).sum(axis=1)) *
+        (s ** 2 - (true_pos ** 2).sum(axis=1))
+    )
+    mcc = np.where(denom_mcc > eps, numerator_mcc / denom_mcc, 0.0)
+
+    # Cohen's Kappa: κ = (p_o - p_e) / (1 - p_e)
+    p_o = overall_accuracy
+    p_e = (true_pos * pred_pos).sum(axis=1) / (s ** 2 + eps)
+    kappa = np.where(1 - p_e > eps, (p_o - p_e) / (1 - p_e + eps), 0.0)
+
+    # Macro averages (equal class weight)
     macro_precision   = precision.mean(axis=1)
     macro_recall      = recall.mean(axis=1)
     macro_f1          = f1.mean(axis=1)
     macro_specificity = specificity.mean(axis=1)
-    macro_accuracy    = accuracy.mean(axis=1)
 
-    # Micro averages (pool counts across classes)
+    # Micro averages (pool counts)
     micro_tp = TP.sum(axis=1)
     micro_fp = FP.sum(axis=1)
     micro_fn = FN.sum(axis=1)
@@ -182,19 +271,20 @@ def compute_metrics_from_cm(C):
     micro_specificity = micro_tn / (micro_tn + micro_fp + eps)
 
     return {
-        # Per-class: shape (n_samples, K)
-        'precision':   precision,
-        'recall':      recall,
-        'specificity': specificity,
-        'f1':          f1,
-        'accuracy':    accuracy,
-        # Macro: shape (n_samples,)
+        # Per-class: (n_samples, K)
+        'precision':     precision,
+        'recall':        recall,
+        'specificity':   specificity,
+        'f1':            f1,
+        'ovr_accuracy':  ovr_accuracy,
+        # Aggregate scalars: (n_samples,)
+        'overall_accuracy': overall_accuracy,
+        'mcc':               mcc,
+        'kappa':             kappa,
         'macro_precision':   macro_precision,
         'macro_recall':      macro_recall,
         'macro_f1':          macro_f1,
         'macro_specificity': macro_specificity,
-        'macro_accuracy':    macro_accuracy,
-        # Micro: shape (n_samples,)
         'micro_precision':   micro_precision,
         'micro_recall':      micro_recall,
         'micro_f1':          micro_f1,
@@ -218,7 +308,7 @@ def summarise_metrics(metrics, ci=0.95):
             'lower':   np.quantile(vals, alpha, axis=0).tolist(),
             'upper':   np.quantile(vals, 1 - alpha, axis=0).tolist(),
             'std':     np.std(vals, axis=0).tolist(),
-            'samples': vals,  # kept in memory for report generation; not serialised to disk
+            'samples': vals,
         }
     return summary
 
@@ -234,25 +324,45 @@ def run_analysis(data: ReviewData, n_samples: int = 5000, ci: float = 0.95):
     Returns
     -------
     dict with keys:
-        'sample'     : metric summaries with pi fixed (U1 uncertainty only)
-        'population' : metric summaries with pi sampled (U1 + U2 uncertainty)
-        'class_names': list of class names
-        'ci'         : credible interval level used
-        'n_samples'  : number of posterior samples drawn
-        'posterior'  : raw posterior samples (pi, T, C_pop, C_samp)
+        'sample'        : metric summaries — inference set, U1 uncertainty only
+        'population'    : metric summaries — population, U1 + U2 uncertainty
+        'transport_fit' : diagnostic for Q-stability assumption
+        'class_names'   : list of class names
+        'ci'            : credible interval level used
+        'n_samples'     : number of posterior samples drawn
+        'posterior'     : raw posterior samples
     """
     posterior = sample_posterior(data, n_samples=n_samples)
 
     metrics_samp = compute_metrics_from_cm(posterior['C_samp'])
     metrics_pop  = compute_metrics_from_cm(posterior['C_pop'])
 
+    # Transport fit summary
+    residuals = posterior['residuals']
+    alpha = (1 - ci) / 2
+    transport_fit = {
+        'mean':    float(residuals.mean()),
+        'lower':   float(np.quantile(residuals, alpha)),
+        'upper':   float(np.quantile(residuals, 1 - alpha)),
+        'std':     float(residuals.std()),
+        'samples': residuals[::5].tolist(),
+    }
+
+    mean_residual = transport_fit['mean']
+    if mean_residual > 0.05:
+        print(f"WARNING: mean transport fit residual = {mean_residual:.4f} (> 0.05). "
+              f"The Q-stability assumption may be poorly supported.")
+    else:
+        print(f"Transport fit residual: {mean_residual:.4f} (good).")
+
     return {
-        'sample':      summarise_metrics(metrics_samp, ci=ci),
-        'population':  summarise_metrics(metrics_pop,  ci=ci),
-        'class_names': data.class_names,
-        'ci':          ci,
-        'n_samples':   n_samples,
-        'posterior':   posterior,
+        'sample':        summarise_metrics(metrics_samp, ci=ci),
+        'population':    summarise_metrics(metrics_pop,  ci=ci),
+        'transport_fit': transport_fit,
+        'class_names':   data.class_names,
+        'ci':            ci,
+        'n_samples':     n_samples,
+        'posterior':     posterior,
     }
 
 
@@ -266,38 +376,33 @@ def generate_html_report(results: dict,
     """
     Inject analysis results into the HTML template and write the report.
 
-    The template must contain the placeholder __DATA_JSON__ exactly once,
-    which is replaced with the serialised data payload.
-
-    Parameters
-    ----------
-    results       : output of run_analysis()
-    template_path : path to report_template.html
-    output_path   : where to write the final HTML report
+    The template must contain the placeholder __DATA_JSON__ exactly once.
     """
-    per_class_metrics = ['precision', 'recall', 'specificity', 'f1', 'accuracy']
-    aggregate_metrics = ['macro_f1', 'macro_precision', 'macro_recall',
-                         'micro_f1', 'micro_precision', 'micro_recall']
+    per_class_metrics = ['precision', 'recall', 'specificity', 'f1', 'ovr_accuracy']
+    aggregate_metrics = [
+        'overall_accuracy', 'mcc', 'kappa',
+        'macro_f1', 'macro_precision', 'macro_recall', 'macro_specificity',
+        'micro_f1', 'micro_precision', 'micro_recall', 'micro_specificity',
+    ]
 
     def serialise_metric(summary, metric):
-        """Serialise a single metric's summary, downsampling posterior samples 5x."""
         s = summary[metric]
-        samples = s['samples']
-        downsampled = samples[::5].tolist()
         return {
             'mean':    s['mean']  if isinstance(s['mean'],  list) else [s['mean']],
             'lower':   s['lower'] if isinstance(s['lower'], list) else [s['lower']],
             'upper':   s['upper'] if isinstance(s['upper'], list) else [s['upper']],
             'std':     s['std']   if isinstance(s['std'],   list) else [s['std']],
-            'samples': downsampled,
+            'samples': s['samples'][::5].tolist() if hasattr(s['samples'], 'tolist')
+                       else s['samples'][::5],
         }
 
     data_payload = {
-        'class_names': results['class_names'],
-        'ci':          results['ci'],
-        'ci_pct':      int(results['ci'] * 100),
-        'sample':      {},
-        'population':  {},
+        'class_names':   results['class_names'],
+        'ci':            results['ci'],
+        'ci_pct':        int(results['ci'] * 100),
+        'sample':        {},
+        'population':    {},
+        'transport_fit': results['transport_fit'],
     }
 
     for metric in per_class_metrics + aggregate_metrics:
@@ -350,15 +455,17 @@ if __name__ == "__main__":
     # Quota-sampled inference set: 500 predictions per class
     I_k = np.array([500, 500, 500, 500], dtype=float)
 
-    # Simulate review counts: m=100 reviews per predicted class
+    # Simulate review counts: m=100 reviews per predicted class k
+    # review_counts[:, k] ~ Multinomial(m, P(true=j | pred=k))
     m = 100
     review_counts = np.zeros((K, K))
     for k in range(K):
+        # True distribution among items predicted as k: P(true=j | pred=k) via Bayes
         unnorm = pi_true * T_true[:, k]
-        p_true_given_pred_k = unnorm / unnorm.sum()
-        review_counts[:, k] = np.random.multinomial(m, p_true_given_pred_k)
+        Q_k_true = unnorm / unnorm.sum()
+        review_counts[:, k] = np.random.multinomial(m, Q_k_true)
 
-    # Historical population counts (e.g. from 10,000 labelled historical items)
+    # Historical population counts (e.g. 10,000 labelled historical items)
     pi_counts = pi_true * 10000
 
     data = ReviewData(
@@ -372,7 +479,7 @@ if __name__ == "__main__":
     print("Review counts (rows=true, cols=predicted):")
     print(review_counts.astype(int))
     print(f"\nI_k (predictions per class): {I_k.astype(int)}")
-    print(f"pi_true (population proportions): {pi_true}")
+    print(f"pi_true (population proportions): {pi_true}\n")
 
     results = run_analysis(data, n_samples=5000, ci=0.95)
 
@@ -387,6 +494,14 @@ if __name__ == "__main__":
                 lower = summary[metric]['lower'][k]
                 upper = summary[metric]['upper'][k]
                 print(f"    {metric:12s}: {mean:.3f}  95% CI [{lower:.3f}, {upper:.3f}]")
+
+    print("\n=== AGGREGATE (Population) ===")
+    for metric in ['overall_accuracy', 'mcc', 'kappa', 'macro_f1', 'micro_f1']:
+        s = results['population'][metric]
+        mean  = s['mean'][0] if isinstance(s['mean'], list) else s['mean']
+        lower = s['lower'][0] if isinstance(s['lower'], list) else s['lower']
+        upper = s['upper'][0] if isinstance(s['upper'], list) else s['upper']
+        print(f"  {metric:20s}: {mean:.3f}  95% CI [{lower:.3f}, {upper:.3f}]")
 
     generate_html_report(
         results,
