@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Classifier Uncertainty Report</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --surface2:  #21262d;
+    --border:    #30363d;
+    --text:      #e6edf3;
+    --text-dim:  #8b949e;
+    --sample:    #58a6ff;
+    --pop:       #f78166;
+    --accent:    #3fb950;
+    --warn:      #d29922;
+    --danger:    #f85149;
+    --mono:      'DM Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 24px 40px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+
+  header h1 {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+  }
+
+  header .subtitle {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+
+  .legend-bar {
+    margin-left: auto;
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot-sample { background: var(--sample); }
+  .dot-pop    { background: var(--pop); }
+
+  .tabs {
+    display: flex;
+    padding: 0 40px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+
+  .tab {
+    padding: 12px 20px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+    background: none;
+    border-top: none; border-left: none; border-right: none;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--sample); border-bottom-color: var(--sample); }
+
+  .main { padding: 32px 40px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  .section-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+
+  .metric-card h3 {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+
+  .metric-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .metric-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    width: 70px;
+    flex-shrink: 0;
+  }
+
+  .bar-container {
+    flex: 1;
+    height: 20px;
+    background: var(--surface2);
+    border-radius: 3px;
+    position: relative;
+    overflow: visible;
+  }
+
+  .bar-ci {
+    position: absolute;
+    top: 4px;
+    height: 12px;
+    border-radius: 2px;
+    opacity: 0.25;
+  }
+
+  .bar-mean {
+    position: absolute;
+    top: 0;
+    width: 3px;
+    height: 20px;
+    border-radius: 2px;
+  }
+
+  .metric-value {
+    font-family: var(--mono);
+    font-size: 12px;
+    width: 90px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .sample-color { background: var(--sample); }
+  .pop-color    { background: var(--pop); }
+
+  .dist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .dist-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+
+  .dist-card h3 {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .dist-card canvas {
+    width: 100% !important;
+    height: 120px !important;
+  }
+
+  .agg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .decomp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-bottom: 40px;
+  }
+
+  .decomp-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .decomp-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .decomp-table tr:last-child td { border-bottom: none; }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-family: var(--mono);
+  }
+
+  .tag-u1 { background: rgba(88,166,255,0.15); color: var(--sample); }
+  .tag-u2 { background: rgba(247,129,102,0.15); color: var(--pop); }
+
+  .uncertainty-bar {
+    height: 6px;
+    border-radius: 3px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  .ci-note {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    margin-bottom: 24px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border-left: 3px solid var(--border);
+    border-radius: 0 4px 4px 0;
+  }
+
+  .class-selector {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+
+  .class-btn {
+    padding: 6px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .class-btn:hover { border-color: var(--sample); color: var(--text); }
+  .class-btn.active {
+    border-color: var(--sample);
+    color: var(--sample);
+    background: rgba(88,166,255,0.08);
+  }
+
+  .transport-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 32px;
+  }
+
+  .transport-card h3 {
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .transport-card p {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    margin-bottom: 14px;
+    line-height: 1.7;
+  }
+
+  .transport-card canvas {
+    width: 100% !important;
+    height: 100px !important;
+  }
+
+  .fit-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: var(--mono);
+    font-weight: 500;
+    margin-left: 8px;
+  }
+
+  .fit-good     { background: rgba(63,185,80,0.15);  color: var(--accent); }
+  .fit-moderate { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .fit-poor     { background: rgba(248,81,73,0.15);  color: var(--danger); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>classifier uncertainty report</h1>
+  <span class="subtitle" id="header-subtitle"></span>
+  <div class="legend-bar">
+    <div class="legend-item"><div class="dot dot-sample"></div><span>inference set (U1 only)</span></div>
+    <div class="legend-item"><div class="dot dot-pop"></div><span>population (U1 + U2)</span></div>
+  </div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('per-class')">Per-Class Metrics</button>
+  <button class="tab" onclick="switchTab('distributions')">Posterior Distributions</button>
+  <button class="tab" onclick="switchTab('aggregate')">Aggregate Metrics</button>
+  <button class="tab" onclick="switchTab('decomposition')">Uncertainty Decomposition</button>
+</div>
+
+<div class="main">
+
+  <!-- PER-CLASS PANEL -->
+  <div id="panel-per-class" class="panel active">
+    <p class="ci-note" id="note-per-class"></p>
+    <div class="section-title">Select class</div>
+    <div class="class-selector" id="class-selector"></div>
+    <div id="per-class-cards" class="metric-grid"></div>
+  </div>
+
+  <!-- DISTRIBUTIONS PANEL -->
+  <div id="panel-distributions" class="panel">
+    <p class="ci-note">
+      Posterior distributions over metric values. Overlap between blue (sample) and red (population)
+      distributions shows how much population uncertainty adds beyond sampling uncertainty.
+    </p>
+    <div class="class-selector" id="class-selector-dist"></div>
+    <div id="dist-cards" class="dist-grid"></div>
+  </div>
+
+  <!-- AGGREGATE PANEL -->
+  <div id="panel-aggregate" class="panel">
+    <p class="ci-note">
+      Macro averages weight all classes equally. Micro averages weight by prediction volume.
+      MCC and Kappa account for class imbalance; values closer to 1 indicate stronger agreement.
+    </p>
+    <div id="transport-fit-card" class="transport-card"></div>
+    <div class="section-title">Aggregate metrics</div>
+    <div id="agg-cards" class="agg-grid"></div>
+  </div>
+
+  <!-- DECOMPOSITION PANEL -->
+  <div id="panel-decomposition" class="panel">
+    <p class="ci-note">
+      U1 = std from incomplete review (sampling uncertainty). U2 = additional std from population
+      prevalence uncertainty. Total std ≈ √(U1² + U2²) — heuristic; covariance term omitted.
+      Compute from joint draws for exact decomposition.
+    </p>
+    <div class="section-title">Uncertainty decomposition by class and metric</div>
+    <table class="decomp-table">
+      <thead>
+        <tr>
+          <th>Class</th><th>Metric</th><th>Sample mean</th><th>Pop mean</th>
+          <th>U1 (sampling)</th><th>U2 (population)</th><th>Dominant</th>
+        </tr>
+      </thead>
+      <tbody id="decomp-body"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const DATA = __DATA_JSON__;
+
+const METRICS = ['precision','recall','specificity','f1','ovr_accuracy'];
+const METRIC_LABELS = {
+  precision:    'Precision',
+  recall:       'Recall',
+  specificity:  'Specificity',
+  f1:           'F1',
+  ovr_accuracy: 'Accuracy (one-vs-rest)',
+};
+
+const AGG_METRICS = [
+  'overall_accuracy','mcc','kappa',
+  'macro_f1','macro_precision','macro_recall','macro_specificity',
+  'micro_f1','micro_precision','micro_recall','micro_specificity',
+];
+const AGG_LABELS = {
+  overall_accuracy:  'Overall Accuracy',
+  mcc:               'MCC',
+  kappa:             "Cohen's Kappa",
+  macro_f1:          'Macro F1',
+  macro_precision:   'Macro Precision',
+  macro_recall:      'Macro Recall',
+  macro_specificity: 'Macro Specificity',
+  micro_f1:          'Micro F1',
+  micro_precision:   'Micro Precision',
+  micro_recall:      'Micro Recall',
+  micro_specificity: 'Micro Specificity',
+};
+
+// Fixed theoretical ranges for bar scaling
+const METRIC_RANGES = {
+  precision:        [0, 1],
+  recall:           [0, 1],
+  specificity:      [0, 1],
+  f1:               [0, 1],
+  ovr_accuracy:     [0, 1],
+  overall_accuracy: [0, 1],
+  mcc:              [-1, 1],
+  kappa:            [-1, 1],
+  macro_f1:         [0, 1],
+  macro_precision:  [0, 1],
+  macro_recall:     [0, 1],
+  macro_specificity:[0, 1],
+  micro_f1:         [0, 1],
+  micro_precision:  [0, 1],
+  micro_recall:     [0, 1],
+  micro_specificity:[0, 1],
+};
+
+let selectedClass = 0;
+const charts = {};
+
+// Header
+document.getElementById('header-subtitle').textContent =
+  `${DATA.ci_pct}% credible intervals · bayesian posterior`;
+document.getElementById('note-per-class').textContent =
+  `Blue = uncertainty from incomplete review (U1). ` +
+  `Red = additional uncertainty from population prevalence (U1+U2). ` +
+  `Bars show posterior mean with ${DATA.ci_pct}% credible interval.`;
+
+// --- Class selectors ---
+function buildClassSelectors() {
+  ['class-selector','class-selector-dist'].forEach(id => {
+    const el = document.getElementById(id);
+    DATA.class_names.forEach((name, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'class-btn' + (i === 0 ? ' active' : '');
+      btn.textContent = name;
+      btn.onclick = () => selectClass(i);
+      el.appendChild(btn);
+    });
+  });
+}
+
+function selectClass(idx) {
+  selectedClass = idx;
+  document.querySelectorAll('.class-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', i === idx);
+  });
+  renderPerClassCards();
+  renderDistCards();
+}
+
+// --- Per-class cards ---
+function renderPerClassCards() {
+  const container = document.getElementById('per-class-cards');
+  container.innerHTML = '';
+  const k = selectedClass;
+
+  METRICS.forEach(metric => {
+    const samp = DATA.sample[metric];
+    const pop  = DATA.population[metric];
+
+    const card = document.createElement('div');
+    card.className = 'metric-card';
+    card.innerHTML = `<h3>${METRIC_LABELS[metric]}</h3>`;
+
+    // Fixed theoretical scale for this metric
+    const [pcMin, pcMax] = METRIC_RANGES[metric];
+    const pcRange = pcMax - pcMin;
+
+    [['Sample', samp, 'sample'], ['Population', pop, 'pop']].forEach(([label, d, cls]) => {
+      const mean  = Array.isArray(d.mean)  ? d.mean[k]  : d.mean;
+      const lower = Array.isArray(d.lower) ? d.lower[k] : d.lower;
+      const upper = Array.isArray(d.upper) ? d.upper[k] : d.upper;
+      const std   = Array.isArray(d.std)   ? d.std[k]   : d.std;
+
+      const pct_mean  = ((mean  - pcMin) / pcRange) * 100;
+      const pct_lower = ((lower - pcMin) / pcRange) * 100;
+      const pct_width = ((upper - lower) / pcRange) * 100;
+
+      const row = document.createElement('div');
+      row.className = 'metric-row';
+      row.innerHTML = `
+        <span class="metric-label">${label}</span>
+        <div class="bar-container">
+          <div class="bar-ci ${cls}-color" style="left:${pct_lower}%;width:${pct_width}%"></div>
+          <div class="bar-mean ${cls}-color" style="left:calc(${pct_mean}% - 1.5px)"></div>
+        </div>
+        <span class="metric-value" style="color:var(--${cls})">
+          ${mean.toFixed(3)}<span style="color:var(--text-dim);font-size:10px"> ±${std.toFixed(3)}</span>
+        </span>
+      `;
+      card.appendChild(row);
+
+      const ciText = document.createElement('div');
+      ciText.style.cssText = 'font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-left:80px;margin-bottom:8px';
+      ciText.textContent = `${DATA.ci_pct}% CI: [${lower.toFixed(3)}, ${upper.toFixed(3)}]`;
+      card.appendChild(ciText);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+// --- Distribution cards ---
+function renderDistCards() {
+  const container = document.getElementById('dist-cards');
+  container.innerHTML = '';
+  const k = selectedClass;
+
+  METRICS.forEach(metric => {
+    const samp = DATA.sample[metric];
+    const pop  = DATA.population[metric];
+
+    const card = document.createElement('div');
+    card.className = 'dist-card';
+    card.innerHTML = `<h3>${METRIC_LABELS[metric]}</h3>`;
+
+    const canvas = document.createElement('canvas');
+    card.appendChild(canvas);
+    container.appendChild(card);
+
+    const sampSamples = samp.samples.map(row => Array.isArray(row) ? row[k] : row);
+    const popSamples  = pop.samples.map(row  => Array.isArray(row) ? row[k] : row);
+
+    renderHistogram(canvas, sampSamples, popSamples, `dist-${metric}-${k}`);
+  });
+}
+
+// --- Aggregate panel ---
+function renderTransportFitCard() {
+  const card = document.getElementById('transport-fit-card');
+  const tf = DATA.transport_fit;
+  const mean = tf.mean;
+  const fitClass = mean < 0.02 ? 'good' : mean < 0.05 ? 'moderate' : 'poor';
+  const fitLabel = mean < 0.02 ? 'good fit' : mean < 0.05 ? 'moderate fit' : 'poor fit — check stability assumption';
+
+  card.innerHTML = `
+    <h3>Q-stability assumption: transport fit diagnostic
+      <span class="fit-badge fit-${fitClass}">${fitLabel}</span>
+    </h3>
+    <p>
+      Residual ||Qp - π|| from solving the population predicted-class mix.
+      Low values indicate that the Q-stability assumption is well supported by the data.
+      High values suggest the model's conditional error behaviour may differ between the
+      inference set and population — treat population metrics with additional caution.
+    </p>
+    <div class="metric-row" style="margin-bottom:6px">
+      <span class="metric-label">Mean</span>
+      <span style="font-family:var(--mono);font-size:13px;color:var(--${fitClass === 'good' ? 'accent' : fitClass === 'moderate' ? 'warn' : 'danger'})">${mean.toFixed(4)}</span>
+    </div>
+    <div style="font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-left:80px;margin-bottom:14px">
+      ${DATA.ci_pct}% CI: [${tf.lower.toFixed(4)}, ${tf.upper.toFixed(4)}]
+    </div>
+  `;
+
+  const canvas = document.createElement('canvas');
+  card.appendChild(canvas);
+
+  const samples = Array.isArray(tf.samples[0]) ? tf.samples.map(r => r[0]) : tf.samples;
+  const gMin = Math.min(...samples), gMax = Math.max(...samples);
+  const bins = 40, bw = (gMax - gMin) / bins || 0.001;
+
+  function hf(data) {
+    const counts = new Array(bins).fill(0);
+    const labels = [];
+    for (let i = 0; i < bins; i++) labels.push((gMin + (i+0.5)*bw).toFixed(4));
+    data.forEach(v => { const idx = Math.min(Math.floor((v-gMin)/bw), bins-1); if(idx>=0) counts[idx]++; });
+    return { labels, density: counts.map(c => c/data.length/bw) };
+  }
+
+  const h = hf(samples);
+  const fitColorHex = fitClass === 'good' ? 'rgba(63,185,80' : fitClass === 'moderate' ? 'rgba(210,153,34' : 'rgba(248,81,73';
+
+  if (charts['transport']) charts['transport'].destroy();
+  charts['transport'] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: h.labels,
+      datasets: [{ label: 'Residual', data: h.density,
+        backgroundColor: `${fitColorHex},0.3)`, borderColor: `${fitColorHex},0.8)`, borderWidth: 1 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 6 }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' },
+             title: { display: true, text: 'density', color: '#8b949e', font: { size: 9 } } }
+      },
+      barPercentage: 1.0, categoryPercentage: 1.0,
+    }
+  });
+}
+
+function renderAggCards() {
+  renderTransportFitCard();
+  const container = document.getElementById('agg-cards');
+  container.innerHTML = '';
+
+  AGG_METRICS.forEach(metric => {
+    const samp = DATA.sample[metric];
+    const pop  = DATA.population[metric];
+
+    const card = document.createElement('div');
+    card.className = 'dist-card';
+    card.innerHTML = `<h3>${AGG_LABELS[metric]}</h3>`;
+
+    // Fixed theoretical scale for this metric
+    const [barMin, barMax] = METRIC_RANGES[metric];
+    const barRange = barMax - barMin;
+
+    [['Sample', samp, 'sample'], ['Population', pop, 'pop']].forEach(([label, d, cls]) => {
+      const mean  = Array.isArray(d.mean)  ? d.mean[0] : d.mean;
+      const lower = Array.isArray(d.lower) ? d.lower[0] : d.lower;
+      const upper = Array.isArray(d.upper) ? d.upper[0] : d.upper;
+
+      const pct_mean  = ((mean  - barMin) / barRange) * 100;
+      const pct_lower = ((lower - barMin) / barRange) * 100;
+      const pct_width = ((upper - lower)  / barRange) * 100;
+
+      const row = document.createElement('div');
+      row.className = 'metric-row';
+      row.innerHTML = `
+        <span class="metric-label">${label}</span>
+        <div class="bar-container">
+          <div class="bar-ci ${cls}-color" style="left:${pct_lower}%;width:${pct_width}%"></div>
+          <div class="bar-mean ${cls}-color" style="left:calc(${pct_mean}% - 1.5px)"></div>
+        </div>
+        <span class="metric-value" style="color:var(--${cls})">${mean.toFixed(3)}</span>
+      `;
+      card.appendChild(row);
+
+      const ciText = document.createElement('div');
+      ciText.style.cssText = 'font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-left:80px;margin-bottom:8px';
+      ciText.textContent = `${DATA.ci_pct}% CI: [${lower.toFixed(3)}, ${upper.toFixed(3)}]`;
+      card.appendChild(ciText);
+    });
+
+    const canvas = document.createElement('canvas');
+    card.appendChild(canvas);
+    container.appendChild(card);
+
+    const sampSamples = Array.isArray(samp.samples[0]) ? samp.samples.map(r => r[0]) : samp.samples;
+    const popSamples  = Array.isArray(pop.samples[0])  ? pop.samples.map(r  => r[0]) : pop.samples;
+    renderHistogram(canvas, sampSamples, popSamples, `agg-${metric}`);
+  });
+}
+
+// --- Decomposition table ---
+function renderDecomposition() {
+  const tbody = document.getElementById('decomp-body');
+  tbody.innerHTML = '';
+
+  DATA.class_names.forEach((className, k) => {
+    METRICS.forEach((metric, mi) => {
+      const samp = DATA.sample[metric];
+      const pop  = DATA.population[metric];
+
+      const u1 = Array.isArray(samp.std) ? samp.std[k] : samp.std;
+      const totalStd = Array.isArray(pop.std) ? pop.std[k] : pop.std;
+      const u2 = Math.sqrt(Math.max(0, totalStd**2 - u1**2));
+      const sampMean = Array.isArray(samp.mean) ? samp.mean[k] : samp.mean;
+      const popMean  = Array.isArray(pop.mean)  ? pop.mean[k]  : pop.mean;
+
+      const dominant = u1 >= u2 ? 'U1' : 'U2';
+      const maxU = Math.max(u1, u2, 0.001);
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-family:var(--mono)">${mi === 0 ? className : ''}</td>
+        <td style="font-family:var(--mono);color:var(--text-dim)">${METRIC_LABELS[metric]}</td>
+        <td style="font-family:var(--mono)">${sampMean.toFixed(3)}</td>
+        <td style="font-family:var(--mono)">${popMean.toFixed(3)}</td>
+        <td>
+          <span class="uncertainty-bar" style="width:${Math.round(u1/maxU*80)}px;background:var(--sample)"></span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--sample)">${u1.toFixed(4)}</span>
+        </td>
+        <td>
+          <span class="uncertainty-bar" style="width:${Math.round(u2/maxU*80)}px;background:var(--pop)"></span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--pop)">${u2.toFixed(4)}</span>
+        </td>
+        <td><span class="tag tag-${dominant.toLowerCase()}">${dominant}</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+// --- Shared histogram renderer ---
+function renderHistogram(canvas, sampSamples, popSamples, chartId) {
+  const allVals = [...sampSamples, ...popSamples];
+  const gMin = Math.min(...allVals), gMax = Math.max(...allVals);
+  const bins = 40, bw = (gMax - gMin) / bins || 0.001;
+
+  function hf(data) {
+    const counts = new Array(bins).fill(0);
+    const labels = [];
+    for (let i = 0; i < bins; i++) labels.push((gMin + (i+0.5)*bw).toFixed(3));
+    data.forEach(v => { const idx = Math.min(Math.floor((v-gMin)/bw), bins-1); if(idx>=0) counts[idx]++; });
+    return { labels, density: counts.map(c => c/data.length/bw) };
+  }
+
+  const hs = hf(sampSamples), hp = hf(popSamples);
+  canvas.id = chartId;
+  if (charts[chartId]) charts[chartId].destroy();
+
+  charts[chartId] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: hs.labels,
+      datasets: [
+        { label: 'Sample',     data: hs.density, backgroundColor: 'rgba(88,166,255,0.4)', borderColor: 'rgba(88,166,255,0.8)', borderWidth: 1 },
+        { label: 'Population', data: hp.density, backgroundColor: 'rgba(247,129,102,0.4)', borderColor: 'rgba(247,129,102,0.8)', borderWidth: 1 },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: '#8b949e', font: { family: 'DM Mono', size: 10 } } } },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 5 }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 9 } }, grid: { color: '#21262d' },
+             title: { display: true, text: 'density', color: '#8b949e', font: { size: 9 } } }
+      },
+      barPercentage: 1.0, categoryPercentage: 1.0,
+    }
+  });
+}
+
+// --- Tab switching ---
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('active', t.getAttribute('onclick').includes(name));
+  });
+  document.querySelectorAll('.panel').forEach(p => {
+    p.classList.toggle('active', p.id === `panel-${name}`);
+  });
+  if (name === 'distributions') renderDistCards();
+  if (name === 'aggregate')     renderAggCards();
+  if (name === 'decomposition') renderDecomposition();
+}
+
+// Initialise
+buildClassSelectors();
+renderPerClassCards();
+</script>
+</body>
+</html>
