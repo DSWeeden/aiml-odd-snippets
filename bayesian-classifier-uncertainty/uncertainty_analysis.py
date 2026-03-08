@@ -511,6 +511,6 @@ if __name__ == "__main__":
 
     generate_html_report(
         results,
-        template_path=str(template_path), # 2. Convert to string if the function is picky
+        template_path=str(template_path),
         output_path=str(output_path),
     )
