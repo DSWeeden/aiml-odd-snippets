@@ -503,8 +503,14 @@ if __name__ == "__main__":
         upper = s['upper'][0] if isinstance(s['upper'], list) else s['upper']
         print(f"  {metric:20s}: {mean:.3f}  95% CI [{lower:.3f}, {upper:.3f}]")
 
+    BASE_DIR = Path(__file__).resolve().parent
+    output_path = BASE_DIR / "outputs" / "uncertainty_report.html"
+    template_path = BASE_DIR / "report_template.html" # Assuming a template folder
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     generate_html_report(
         results,
-        template_path="report_template.html",
-        output_path="/mnt/user-data/outputs/uncertainty_report.html",
+        template_path=str(template_path), # 2. Convert to string if the function is picky
+        output_path=str(output_path),
     )
