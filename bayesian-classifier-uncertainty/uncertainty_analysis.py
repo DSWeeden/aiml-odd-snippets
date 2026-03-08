@@ -505,7 +505,7 @@ if __name__ == "__main__":
 
     BASE_DIR = Path(__file__).resolve().parent
     output_path = BASE_DIR / "outputs" / "uncertainty_report.html"
-    template_path = BASE_DIR / "report_template.html" # Assuming a template folder
+    template_path = BASE_DIR / "templates" / "report_template.html"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
